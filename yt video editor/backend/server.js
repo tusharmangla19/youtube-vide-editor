@@ -16,7 +16,7 @@ const executeYtDlp = async (args, cwd) => {
 		// Quote the path if it contains spaces
 		const quotedPath = ytDlpPath.includes(' ') ? `"${ytDlpPath}"` : ytDlpPath;
 		
-		const process = spawn(quotedPath, args, {
+		const childProcess = spawn(quotedPath, args, {
 			cwd,
 			shell: true,
 			env: {
@@ -28,22 +28,22 @@ const executeYtDlp = async (args, cwd) => {
 		let stdout = '';
 		let stderr = '';
 
-		process.stdout.on('data', (data) => {
+		childProcess.stdout.on('data', (data) => {
 			stdout += data;
 			console.log(`yt-dlp stdout: ${data}`);
 		});
 
-		process.stderr.on('data', (data) => {
+		childProcess.stderr.on('data', (data) => {
 			stderr += data;
 			console.error(`yt-dlp stderr: ${data}`);
 		});
 
-		process.on('error', (err) => {
+		childProcess.on('error', (err) => {
 			console.error('Failed to start yt-dlp:', err);
 			reject(err);
 		});
 
-		process.on('close', (code) => {
+		childProcess.on('close', (code) => {
 			console.log(`yt-dlp process exited with code: ${code}`);
 			if (code === 0) {
 				resolve({ stdout, stderr });
