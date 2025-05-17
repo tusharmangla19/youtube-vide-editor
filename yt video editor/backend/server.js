@@ -8,12 +8,15 @@ const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
 // Define yt-dlp path relative to current directory and ensure it's properly escaped
-const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp').replace(/\s/g, '\\ ');
+const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp');
 
 // Helper function to execute yt-dlp commands
 const executeYtDlp = async (args, cwd) => {
 	return new Promise((resolve, reject) => {
-		const process = spawn(ytDlpPath, args, {
+		// Quote the path if it contains spaces
+		const quotedPath = ytDlpPath.includes(' ') ? `"${ytDlpPath}"` : ytDlpPath;
+		
+		const process = spawn(quotedPath, args, {
 			cwd,
 			shell: true,
 			env: {
@@ -68,19 +71,51 @@ if (!fs.existsSync(ytDlpPath)) {
 	try {
 		const https = require('https');
 		const file = fs.createWriteStream(ytDlpPath);
-		https.get('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', response => {
+		const request = https.get('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', response => {
+			if (response.statusCode !== 200) {
+				fs.unlinkSync(ytDlpPath);
+				throw new Error(`Failed to download yt-dlp: ${response.statusCode}`);
+			}
+			
 			response.pipe(file);
+			
 			file.on('finish', () => {
 				file.close();
-				fs.chmodSync(ytDlpPath, '755');
-				console.log('yt-dlp downloaded and made executable');
+				try {
+					fs.chmodSync(ytDlpPath, '755');
+					console.log('yt-dlp downloaded and made executable');
+					
+					// Verify the download immediately
+					exec(`"${ytDlpPath}" --version`, (error, stdout, stderr) => {
+						if (error) {
+							console.error('Error verifying yt-dlp:', error);
+							if (fs.existsSync(ytDlpPath)) {
+								fs.unlinkSync(ytDlpPath);
+							}
+						} else {
+							console.log('yt-dlp verified, version:', stdout.trim());
+						}
+					});
+				} catch (chmodError) {
+					console.error('Error making yt-dlp executable:', chmodError);
+					if (fs.existsSync(ytDlpPath)) {
+						fs.unlinkSync(ytDlpPath);
+					}
+				}
 			});
-		}).on('error', err => {
+		});
+
+		request.on('error', err => {
 			console.error('Error downloading yt-dlp:', err);
-			fs.unlinkSync(ytDlpPath);
+			if (fs.existsSync(ytDlpPath)) {
+				fs.unlinkSync(ytDlpPath);
+			}
 		});
 	} catch (error) {
 		console.error('Error setting up yt-dlp:', error);
+		if (fs.existsSync(ytDlpPath)) {
+			fs.unlinkSync(ytDlpPath);
+		}
 	}
 }
 
