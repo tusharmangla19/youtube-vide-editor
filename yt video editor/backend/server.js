@@ -12,12 +12,43 @@ const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp');
 
 const app = express();
 
+// Create bin directory if it doesn't exist
+try {
+	if (!fs.existsSync(path.join(__dirname, 'bin'))) {
+		fs.mkdirSync(path.join(__dirname, 'bin'));
+	}
+} catch (error) {
+	console.error('Error creating bin directory:', error);
+}
+
+// Download yt-dlp if it doesn't exist
+if (!fs.existsSync(ytDlpPath)) {
+	console.log('Downloading yt-dlp...');
+	try {
+		const https = require('https');
+		const file = fs.createWriteStream(ytDlpPath);
+		https.get('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', response => {
+			response.pipe(file);
+			file.on('finish', () => {
+				file.close();
+				fs.chmodSync(ytDlpPath, '755');
+				console.log('yt-dlp downloaded and made executable');
+			});
+		}).on('error', err => {
+			console.error('Error downloading yt-dlp:', err);
+			fs.unlinkSync(ytDlpPath);
+		});
+	} catch (error) {
+		console.error('Error setting up yt-dlp:', error);
+	}
+}
+
 // Verify yt-dlp installation on startup
 try {
 	fs.accessSync(ytDlpPath, fs.constants.X_OK);
 	console.log('yt-dlp is accessible at:', ytDlpPath);
 	// Verify it works
-	exec(`${ytDlpPath} --version`, (error, stdout, stderr) => {
+	exec(`"${ytDlpPath}" --version`, (error, stdout, stderr) => {
 		if (error) {
 			console.error('Error running yt-dlp:', error);
 		} else {
@@ -94,19 +125,15 @@ app.post("/trim", async (req, res) => {
 			const ytdlp = spawn(
 				ytDlpPath,
 				[
-					"-f",
-					"bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
-					"--merge-output-format",
-					"mp4",
-					"--ffmpeg-location",
-					ffmpegPath,
-					"-o",
-					videoPath,
-					url,
+					'--format', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio',
+					'--merge-output-format', 'mp4',
+					'--ffmpeg-location', ffmpegPath,
+					'--output', videoPath,
+					url
 				],
 				{ 
 					cwd: tmpDir,
-					shell: true
+					shell: false // Disable shell to avoid escaping issues
 				}
 			);
 
