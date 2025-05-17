@@ -1,6 +1,6 @@
 const config = {
   apiUrl: import.meta.env.PROD 
-    ? 'https://your-backend-url.onrender.com'  // Replace with your actual Render backend URL
+    ? process.env.VITE_BACKEND_URL || 'http://localhost:5000'
     : 'http://localhost:5000'
 };
 
