@@ -12,12 +12,43 @@ const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp');
 
 const app = express();
 
+// Create bin directory if it doesn't exist
+try {
+	if (!fs.existsSync(path.join(__dirname, 'bin'))) {
+		fs.mkdirSync(path.join(__dirname, 'bin'));
+	}
+} catch (error) {
+	console.error('Error creating bin directory:', error);
+}
+
+// Download yt-dlp if it doesn't exist
+if (!fs.existsSync(ytDlpPath)) {
+	console.log('Downloading yt-dlp...');
+	try {
+		const https = require('https');
+		const file = fs.createWriteStream(ytDlpPath);
+		https.get('https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', response => {
+			response.pipe(file);
+			file.on('finish', () => {
+				file.close();
+				fs.chmodSync(ytDlpPath, '755');
+				console.log('yt-dlp downloaded and made executable');
+			});
+		}).on('error', err => {
+			console.error('Error downloading yt-dlp:', err);
+			fs.unlinkSync(ytDlpPath);
+		});
+	} catch (error) {
+		console.error('Error setting up yt-dlp:', error);
+	}
+}
+
 // Verify yt-dlp installation on startup
 try {
 	fs.accessSync(ytDlpPath, fs.constants.X_OK);
 	console.log('yt-dlp is accessible at:', ytDlpPath);
 	// Verify it works
-	exec(`${ytDlpPath} --version`, (error, stdout, stderr) => {
+	exec(`"${ytDlpPath}" --version`, (error, stdout, stderr) => {
 		if (error) {
 			console.error('Error running yt-dlp:', error);
 		} else {
@@ -27,20 +58,6 @@ try {
 } catch (error) {
 	console.error('Error accessing yt-dlp:', error);
 }
-
-// CORS fix for preflight
-app.use((req, res, next) => {
-	res.header("Access-Control-Allow-Origin", "*");
-	res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-	res.header(
-		"Access-Control-Allow-Headers",
-		"Origin, X-Requested-With, Content-Type, Accept"
-	);
-	if (req.method === "OPTIONS") {
-		return res.sendStatus(200);
-	}
-	next();
-});
 
 app.use(cors());
 app.use(express.json());
@@ -86,6 +103,17 @@ app.post("/trim", async (req, res) => {
 		
 		const videoPath = path.join(tmpDir, "video.mp4");
 		const outputPath = path.join(tmpDir, "output.mp4");
+		const cookiesPath = path.join(tmpDir, "cookies.txt");
+
+		// Create a more realistic cookies.txt file
+		const cookieContent = `youtube.com	TRUE	/	FALSE	2597573456	CONSENT	YES+cb.20240101-17-p0.en+FX+${Math.floor(Math.random() * 900) + 100}
+youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	VISITOR_INFO1_LIVE	${Math.random().toString(36).substring(2, 15)}
+youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	LOGIN_INFO	${Math.random().toString(36).substring(2, 15)}
+youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	YSC	${Math.random().toString(36).substring(2, 15)}
+youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	PREF	f4=${Math.floor(Math.random() * 10000)}
+.youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	GPS	1`;
+
+		fs.writeFileSync(cookiesPath, cookieContent, 'utf8');
 
 		console.log("Downloading video using yt-dlp at:", ytDlpPath);
 
@@ -94,49 +122,111 @@ app.post("/trim", async (req, res) => {
 			const ytdlp = spawn(
 				ytDlpPath,
 				[
-					"-f",
-					"bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
-					"--merge-output-format",
-					"mp4",
-					"--ffmpeg-location",
-					ffmpegPath,
-					"-o",
-					videoPath,
-					url,
+					'--format', 'best[height<=720][ext=mp4]/worst[height>=360][ext=mp4]/worst[ext=mp4]/best',
+					'--force-ipv4',
+					'--cookies', cookiesPath,
+					'--no-check-certificates',
+					'--no-cache-dir',
+					'--no-warnings',
+					'--prefer-insecure',
+					'--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+					'--referer', 'https://www.youtube.com/',
+					'--add-header', 'Accept-Language:en-US,en;q=0.9',
+					'--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+					'--add-header', 'Accept-Encoding:gzip, deflate',
+					'--add-header', 'DNT:1',
+					'--add-header', 'Connection:keep-alive',
+					'--add-header', 'Upgrade-Insecure-Requests:1',
+					'--add-header', 'Sec-Fetch-Site:same-origin',
+					'--add-header', 'Sec-Fetch-Mode:navigate',
+					'--add-header', 'Sec-Fetch-User:?1',
+					'--add-header', 'Sec-Fetch-Dest:document',
+					'--geo-bypass',
+					'--no-playlist',
+					'--extractor-args', 'youtube:player_client=android,web',
+					'--output', videoPath,
+					'--no-part',
+					'--no-mtime',
+					'--ignore-errors',
+					'--abort-on-error',
+					'--socket-timeout', '30',
+					'--retries', '3',
+					'--sleep-requests', '1',
+					'--sleep-interval', '5',
+					'--max-sleep-interval', '10',
+					'--sleep-subtitles', '1',
+					url
 				],
 				{ 
 					cwd: tmpDir,
-					shell: true
+					shell: false,
+					env: {
+						...process.env,
+						HOME: tmpDir
+					}
 				}
 			);
 
+			let errorOutput = '';
+			let stdoutOutput = '';
+
 			ytdlp.stderr.on("data", (data) => {
 				const message = data.toString();
+				errorOutput += message;
 				console.error(`yt-dlp stderr: ${message}`);
 			});
 
 			ytdlp.stdout.on("data", (data) => {
 				const message = data.toString();
+				stdoutOutput += message;
 				console.log(`yt-dlp stdout: ${message}`);
 			});
 
 			ytdlp.on("error", (err) => {
 				console.error("yt-dlp process error:", err);
+				console.error("Accumulated stdout:", stdoutOutput);
+				console.error("Accumulated stderr:", errorOutput);
 				reject(err);
 			});
 
 			ytdlp.on("close", (code) => {
 				console.log("yt-dlp process exited with code:", code);
+				console.log("Final stdout:", stdoutOutput);
+				console.log("Final stderr:", errorOutput);
+				
+				// Clean up cookies file
+				try {
+					fs.unlinkSync(cookiesPath);
+				} catch (err) {
+					console.error("Error deleting cookies file:", err);
+				}
+				
 				if (code === 0) {
 					if (!fs.existsSync(videoPath)) {
 						const error = new Error("Video file not found after download");
 						console.error(error.message);
 						reject(error);
 					} else {
+						const stats = fs.statSync(videoPath);
 						console.log("Video downloaded successfully to:", videoPath);
+						console.log("File size:", stats.size, "bytes");
 						resolve();
 					}
 				} else {
+					// Try to get available formats when download fails
+					try {
+						console.log("Attempting to list available formats...");
+						exec(`${ytDlpPath} --list-formats ${url}`, (error, stdout, stderr) => {
+							if (error) {
+								console.error("Error listing formats:", error);
+							} else {
+								console.log("Available formats:", stdout);
+							}
+						});
+					} catch (err) {
+						console.error("Error executing format list command:", err);
+					}
+					
 					const error = new Error(`yt-dlp exited with code ${code}`);
 					console.error(error.message);
 					reject(error);
@@ -151,30 +241,10 @@ app.post("/trim", async (req, res) => {
 			ffmpeg(videoPath)
 				.seekInput(startSec)
 				.duration(endSec - startSec)
-				.videoCodec("libx264")
-				.audioCodec("aac")
-				.audioBitrate("192k")
-				.outputOptions("-movflags", "+faststart")
-				.outputOptions("-loglevel", "debug") // Enable verbose FFmpeg logging
-				.on("end", () => {
-					console.log("Trimming completed successfully.");
-					resolve();
-				})
-				.on("stderr", (data) => {
-					const stderrData = data.toString();
-					// FFmpeg prints progress as "time=" in stderr
-					if (stderrData.includes("time=")) {
-						const match = stderrData.match(/time=(\d+:\d+:\d+.\d+)/);
-						if (match) {
-							console.log(`FFmpeg stderr progress: ${match[1]}`); // Log the time from stderr
-						}
-					}
-				})
-				.on("error", (err) => {
-					console.error("ffmpeg error:", err);
-					reject(err);
-				})
-				.save(outputPath);
+				.output(outputPath)
+				.on('end', resolve)
+				.on('error', reject)
+				.run();
 		});
 
 		console.log("Streaming the trimmed video...");
