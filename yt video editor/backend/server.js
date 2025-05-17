@@ -7,23 +7,48 @@ const os = require("os");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
-// Define yt-dlp path relative to current directory and ensure it's properly escaped
+// Define yt-dlp path relative to current directory
 const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp');
 
 // Helper function to execute yt-dlp commands
 const executeYtDlp = async (args, cwd) => {
 	return new Promise((resolve, reject) => {
-		// Quote the path if it contains spaces
-		const quotedPath = ytDlpPath.includes(' ') ? `"${ytDlpPath}"` : ytDlpPath;
+		// On Windows use spawn directly, on Unix-like systems use shell script wrapper
+		const isWindows = process.platform === 'win32';
 		
-		const childProcess = spawn(quotedPath, args, {
-			cwd,
-			shell: true,
-			env: {
-				...process.env,
-				PATH: `${path.dirname(ytDlpPath)}:${process.env.PATH}`
-			}
-		});
+		let childProcess;
+		if (isWindows) {
+			childProcess = spawn(ytDlpPath, args, {
+				cwd,
+				shell: true,
+				env: {
+					...process.env,
+					PATH: `${path.dirname(ytDlpPath)}${path.delimiter}${process.env.PATH}`
+				}
+			});
+		} else {
+			// Create a temporary shell script to handle the command
+			const scriptPath = path.join(cwd, 'yt-dlp-wrapper.sh');
+			const command = `"${ytDlpPath}" ${args.map(arg => `"${arg}"`).join(' ')}`;
+			fs.writeFileSync(scriptPath, `#!/bin/bash\n${command}\n`, { mode: 0o755 });
+
+			childProcess = spawn('/bin/bash', [scriptPath], {
+				cwd,
+				env: {
+					...process.env,
+					PATH: `${path.dirname(ytDlpPath)}${path.delimiter}${process.env.PATH}`
+				}
+			});
+
+			// Clean up the script file after execution
+			childProcess.on('exit', () => {
+				try {
+					fs.unlinkSync(scriptPath);
+				} catch (err) {
+					console.error('Error cleaning up wrapper script:', err);
+				}
+			});
+		}
 
 		let stdout = '';
 		let stderr = '';
