@@ -7,7 +7,26 @@ const os = require("os");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
+// Define yt-dlp path
+const ytDlpPath = '/usr/local/bin/yt-dlp';
+
 const app = express();
+
+// Verify yt-dlp installation on startup
+try {
+	fs.accessSync(ytDlpPath, fs.constants.X_OK);
+	console.log('yt-dlp is accessible at:', ytDlpPath);
+} catch (error) {
+	console.error('Error accessing yt-dlp:', error);
+	// Try to find yt-dlp in PATH
+	exec('which yt-dlp', (error, stdout, stderr) => {
+		if (error) {
+			console.error('yt-dlp not found in PATH');
+		} else {
+			console.log('yt-dlp found at:', stdout.trim());
+		}
+	});
+}
 
 // CORS fix for preflight
 app.use((req, res, next) => {
@@ -42,67 +61,85 @@ function parseTime(time) {
 app.post("/trim", async (req, res) => {
 	let tmpDir;
 	try {
+		console.log("Trim request received:", req.body);
+		
 		const { url, start, end } = req.body;
 		if (!url || start == null || end == null) {
+			console.log("Missing parameters:", { url, start, end });
 			return res.status(400).json({ error: "Missing url, start, or end" });
 		}
+
 		const startSec = parseTime(start);
 		const endSec = parseTime(end);
+		console.log("Parsed times:", { startSec, endSec });
+
 		if (endSec <= startSec) {
+			console.log("Invalid time range:", { startSec, endSec });
 			return res
 				.status(400)
 				.json({ error: "End time must be greater than start time" });
 		}
 
-		// Create temp directory
+		console.log("Creating temp directory...");
 		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-clip-"));
+		console.log("Temp directory created:", tmpDir);
+		
 		const videoPath = path.join(tmpDir, "video.mp4");
 		const outputPath = path.join(tmpDir, "output.mp4");
 
-		console.log("Downloading video...");
+		console.log("Downloading video using yt-dlp at:", ytDlpPath);
 
-		// Download video with yt-dlp and specify ffmpeg location
+		// Download video with yt-dlp
 		await new Promise((resolve, reject) => {
 			const ytdlp = spawn(
-				"yt-dlp",
+				ytDlpPath,
 				[
 					"-f",
 					"bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio",
 					"--merge-output-format",
 					"mp4",
 					"--ffmpeg-location",
-					ffmpegPath, // Point to ffmpeg from ffmpeg-static
+					ffmpegPath,
 					"-o",
-					"video.mp4",
+					videoPath,  // Use full path
 					url,
 				],
-				{ cwd: tmpDir }
+				{ 
+					cwd: tmpDir,
+					shell: true
+				}
 			);
 
 			ytdlp.stderr.on("data", (data) => {
-				console.error(`yt-dlp stderr: ${data.toString()}`);
+				const message = data.toString();
+				console.error(`yt-dlp stderr: ${message}`);
 			});
 
 			ytdlp.stdout.on("data", (data) => {
-				console.log(`yt-dlp stdout: ${data.toString()}`);
+				const message = data.toString();
+				console.log(`yt-dlp stdout: ${message}`);
 			});
 
 			ytdlp.on("error", (err) => {
-				console.error("yt-dlp failed to start:", err);
+				console.error("yt-dlp process error:", err);
 				reject(err);
 			});
 
 			ytdlp.on("close", (code) => {
+				console.log("yt-dlp process exited with code:", code);
 				if (code === 0) {
-					const videoFilePath = path.join(tmpDir, "video.mp4");
-					if (!fs.existsSync(videoFilePath)) {
-						reject(new Error("Video file not found after download"));
+					if (!fs.existsSync(videoPath)) {
+						const error = new Error("Video file not found after download");
+						console.error(error.message);
+						reject(error);
 					} else {
-						console.log("Video downloaded successfully.");
+						console.log("Video downloaded successfully to:", videoPath);
 						resolve();
 					}
 				} else {
-					reject(new Error(`yt-dlp exited with code ${code}`));
+					const error = new Error(`yt-dlp exited with code ${code}`);
+					console.error(error.message);
+					reject(error);
 				}
 			});
 		});
@@ -164,6 +201,7 @@ app.post("/trim", async (req, res) => {
 		res.status(500).json({ error: err.message || "Unknown server error" });
 	}
 });
+
 app.post("/merge", async (req, res) => {
 	let tmpDir;
 	try {
@@ -518,114 +556,6 @@ app.post("/add-music", async (req, res) => {
 		readStream.on("close", () =>
 			fs.rmSync(tmpDir, { recursive: true, force: true })
 		);
-	} catch (err) {
-		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
-		console.error("Error processing /add-music:", err);
-		res.status(500).json({ error: err.message || "Unknown error" });
-	}
-});
-app.post("/add-music", async (req, res) => {
-	let tmpDir;
-	try {
-		const { url, musicUrl } = req.body;
-		if (!url || !musicUrl) {
-			console.log("Missing URL or music URL.");
-			return res.status(400).json({ error: "Missing url or musicUrl" });
-		}
-
-		console.log("Starting processing...");
-		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "yt-music-"));
-		const videoPath = path.join(tmpDir, "video.mp4");
-		const musicPath = path.join(tmpDir, "music.mp3");
-		const outputPath = path.join(tmpDir, "output.mp4");
-
-		// Download video
-		const download = (url, output, label) =>
-			new Promise((resolve, reject) => {
-				console.log(`Downloading ${label}...`);
-				const ytdlp = spawn(
-					"yt-dlp",
-					[
-						"-f",
-						"bestaudio[ext=m4a]/bestaudio",
-						"--merge-output-format",
-						"mp4",
-						"--ffmpeg-location",
-						ffmpegPath,
-						"-o",
-						output,
-						url,
-					],
-					{ cwd: tmpDir }
-				);
-				ytdlp.stderr.on("data", (data) =>
-					console.error(`yt-dlp stderr: ${data.toString()}`)
-				);
-				ytdlp.on("close", (code) =>
-					code === 0
-						? resolve()
-						: reject(new Error(`yt-dlp exited with code ${code}`))
-				);
-			});
-
-		console.log("Downloading video...");
-		await download(url, videoPath, "video");
-
-		console.log("Downloading music...");
-		await download(musicUrl, musicPath, "music");
-
-		// Check if files exist
-		console.log("Checking if files exist...");
-		if (!fs.existsSync(videoPath)) {
-			console.error("Video file does not exist:", videoPath);
-			return res.status(500).json({ error: "Video file not found" });
-		}
-		if (!fs.existsSync(musicPath)) {
-			console.error("Music file does not exist:", musicPath);
-			return res.status(500).json({ error: "Music file not found" });
-		}
-
-		// Mix music
-		console.log("Mixing music...");
-		await new Promise((resolve, reject) => {
-			const ffmpegCommand = ffmpeg()
-				.addInput(videoPath)
-				.addInput(musicPath)
-				.complexFilter([
-					"[1:a]volume=0.3[a1]", // background music lower
-					"[0:a][a1]amix=inputs=2:duration=shortest[aout]", // mix audio
-				])
-				.map("0:v")
-				.map("[aout]")
-				.outputOptions("-c:v", "copy")
-				.output(outputPath)
-				.on("start", (commandLine) => {
-					console.log("Running ffmpeg command:", commandLine); // Log the ffmpeg command being run
-				})
-				.on("end", () => {
-					console.log("Mixing completed.");
-					resolve();
-				})
-				.on("stderr", (stderr) => {
-					console.error("ffmpeg stderr:", stderr); // Log any stderr from ffmpeg
-				})
-				.on("error", (err) => {
-					console.error("Error during mixing:", err); // Log detailed error
-					reject(err);
-				})
-				.run();
-		});
-
-		// Stream back
-		console.log("Streaming the final video...");
-		res.setHeader("Content-Type", "video/mp4");
-		res.setHeader("Content-Disposition", 'attachment; filename="music.mp4"');
-		const readStream = fs.createReadStream(outputPath);
-		readStream.pipe(res);
-		readStream.on("close", () => {
-			console.log("File successfully sent to the client.");
-			fs.rmSync(tmpDir, { recursive: true, force: true });
-		});
 	} catch (err) {
 		if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
 		console.error("Error processing /add-music:", err);
