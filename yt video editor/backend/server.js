@@ -125,48 +125,74 @@ app.post("/trim", async (req, res) => {
 			const ytdlp = spawn(
 				ytDlpPath,
 				[
-					'--format', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio',
-					'--merge-output-format', 'mp4',
-					'--ffmpeg-location', ffmpegPath,
-					'--output', videoPath,
+					'--format', '18/22',  // Try mp4 format with 360p or 720p
+					'--force-ipv4',
 					'--no-check-certificates',
 					'--no-cache-dir',
-					'--extractor-args', 'youtube:player_client=android',
-					'--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+					'--no-warnings',
+					'--prefer-insecure',
+					'--user-agent', 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_0_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E150',  // iOS user agent
 					'--add-header', 'Accept-Language:en-US,en;q=0.9',
+					'--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+					'--add-header', 'Accept-Encoding:gzip, deflate',
+					'--add-header', 'DNT:1',
+					'--add-header', 'Connection:keep-alive',
 					'--geo-bypass',
+					'--extractor-args', 'youtube:player_client=ios,android',
+					'--output', videoPath,
+					'--no-part',  // Don't use .part files
+					'--no-mtime',  // Don't use filesystem mtimes
+					'--no-playlist',  // Download only the video if URL refers to a playlist
+					'--ignore-errors',
+					'--abort-on-error',
 					url
 				],
 				{ 
 					cwd: tmpDir,
-					shell: false
+					shell: false,
+					env: {
+						...process.env,
+						HOME: tmpDir  // Set HOME to temp directory to avoid cache issues
+					}
 				}
 			);
 
+			let errorOutput = '';
+			let stdoutOutput = '';
+
 			ytdlp.stderr.on("data", (data) => {
 				const message = data.toString();
+				errorOutput += message;
 				console.error(`yt-dlp stderr: ${message}`);
 			});
 
 			ytdlp.stdout.on("data", (data) => {
 				const message = data.toString();
+				stdoutOutput += message;
 				console.log(`yt-dlp stdout: ${message}`);
 			});
 
 			ytdlp.on("error", (err) => {
 				console.error("yt-dlp process error:", err);
+				console.error("Accumulated stdout:", stdoutOutput);
+				console.error("Accumulated stderr:", errorOutput);
 				reject(err);
 			});
 
 			ytdlp.on("close", (code) => {
 				console.log("yt-dlp process exited with code:", code);
+				console.log("Final stdout:", stdoutOutput);
+				console.log("Final stderr:", errorOutput);
+				
 				if (code === 0) {
 					if (!fs.existsSync(videoPath)) {
 						const error = new Error("Video file not found after download");
 						console.error(error.message);
 						reject(error);
 					} else {
+						const stats = fs.statSync(videoPath);
 						console.log("Video downloaded successfully to:", videoPath);
+						console.log("File size:", stats.size, "bytes");
 						resolve();
 					}
 				} else {
