@@ -7,8 +7,8 @@ const os = require("os");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
-// Define yt-dlp path
-const ytDlpPath = '/usr/local/bin/yt-dlp';
+// Define yt-dlp path relative to current directory
+const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp');
 
 const app = express();
 
@@ -16,16 +16,16 @@ const app = express();
 try {
 	fs.accessSync(ytDlpPath, fs.constants.X_OK);
 	console.log('yt-dlp is accessible at:', ytDlpPath);
-} catch (error) {
-	console.error('Error accessing yt-dlp:', error);
-	// Try to find yt-dlp in PATH
-	exec('which yt-dlp', (error, stdout, stderr) => {
+	// Verify it works
+	exec(`${ytDlpPath} --version`, (error, stdout, stderr) => {
 		if (error) {
-			console.error('yt-dlp not found in PATH');
+			console.error('Error running yt-dlp:', error);
 		} else {
-			console.log('yt-dlp found at:', stdout.trim());
+			console.log('yt-dlp version:', stdout.trim());
 		}
 	});
+} catch (error) {
+	console.error('Error accessing yt-dlp:', error);
 }
 
 // CORS fix for preflight
@@ -101,7 +101,7 @@ app.post("/trim", async (req, res) => {
 					"--ffmpeg-location",
 					ffmpegPath,
 					"-o",
-					videoPath,  // Use full path
+					videoPath,
 					url,
 				],
 				{ 
