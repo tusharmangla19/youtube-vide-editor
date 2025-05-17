@@ -7,8 +7,49 @@ const os = require("os");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 
-// Define yt-dlp path relative to current directory
-const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp');
+// Define yt-dlp path relative to current directory and ensure it's properly escaped
+const ytDlpPath = path.join(__dirname, 'bin', 'yt-dlp').replace(/\s/g, '\\ ');
+
+// Helper function to execute yt-dlp commands
+const executeYtDlp = async (args, cwd) => {
+	return new Promise((resolve, reject) => {
+		const process = spawn(ytDlpPath, args, {
+			cwd,
+			shell: true,
+			env: {
+				...process.env,
+				PATH: `${path.dirname(ytDlpPath)}:${process.env.PATH}`
+			}
+		});
+
+		let stdout = '';
+		let stderr = '';
+
+		process.stdout.on('data', (data) => {
+			stdout += data;
+			console.log(`yt-dlp stdout: ${data}`);
+		});
+
+		process.stderr.on('data', (data) => {
+			stderr += data;
+			console.error(`yt-dlp stderr: ${data}`);
+		});
+
+		process.on('error', (err) => {
+			console.error('Failed to start yt-dlp:', err);
+			reject(err);
+		});
+
+		process.on('close', (code) => {
+			console.log(`yt-dlp process exited with code: ${code}`);
+			if (code === 0) {
+				resolve({ stdout, stderr });
+			} else {
+				reject(new Error(`yt-dlp exited with code ${code}\nStderr: ${stderr}`));
+			}
+		});
+	});
+};
 
 const app = express();
 
@@ -105,8 +146,12 @@ app.post("/trim", async (req, res) => {
 		const outputPath = path.join(tmpDir, "output.mp4");
 		const cookiesPath = path.join(tmpDir, "cookies.txt");
 
-		// Create a more realistic cookies.txt file
-		const cookieContent = `youtube.com	TRUE	/	FALSE	2597573456	CONSENT	YES+cb.20240101-17-p0.en+FX+${Math.floor(Math.random() * 900) + 100}
+		// Create a more realistic cookies.txt file with proper Netscape format
+		const cookieContent = `# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+# This is a generated file!  Do not edit.
+
+youtube.com	TRUE	/	FALSE	2597573456	CONSENT	YES+cb.20240101-17-p0.en+FX+${Math.floor(Math.random() * 900) + 100}
 youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	VISITOR_INFO1_LIVE	${Math.random().toString(36).substring(2, 15)}
 youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	LOGIN_INFO	${Math.random().toString(36).substring(2, 15)}
 youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	YSC	${Math.random().toString(36).substring(2, 15)}
@@ -117,122 +162,43 @@ youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	PREF
 
 		console.log("Downloading video using yt-dlp at:", ytDlpPath);
 
-		// Download video with yt-dlp
-		await new Promise((resolve, reject) => {
-			const ytdlp = spawn(
-				ytDlpPath,
-				[
-					'--format', 'best[height<=720][ext=mp4]/worst[height>=360][ext=mp4]/worst[ext=mp4]/best',
-					'--force-ipv4',
-					'--cookies', cookiesPath,
-					'--no-check-certificates',
-					'--no-cache-dir',
-					'--no-warnings',
-					'--prefer-insecure',
-					'--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-					'--referer', 'https://www.youtube.com/',
-					'--add-header', 'Accept-Language:en-US,en;q=0.9',
-					'--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-					'--add-header', 'Accept-Encoding:gzip, deflate',
-					'--add-header', 'DNT:1',
-					'--add-header', 'Connection:keep-alive',
-					'--add-header', 'Upgrade-Insecure-Requests:1',
-					'--add-header', 'Sec-Fetch-Site:same-origin',
-					'--add-header', 'Sec-Fetch-Mode:navigate',
-					'--add-header', 'Sec-Fetch-User:?1',
-					'--add-header', 'Sec-Fetch-Dest:document',
-					'--geo-bypass',
-					'--no-playlist',
-					'--extractor-args', 'youtube:player_client=android,web',
-					'--output', videoPath,
-					'--no-part',
-					'--no-mtime',
-					'--ignore-errors',
-					'--abort-on-error',
-					'--socket-timeout', '30',
-					'--retries', '3',
-					'--sleep-requests', '1',
-					'--sleep-interval', '5',
-					'--max-sleep-interval', '10',
-					'--sleep-subtitles', '1',
-					url
-				],
-				{ 
-					cwd: tmpDir,
-					shell: false,
-					env: {
-						...process.env,
-						HOME: tmpDir
-					}
-				}
-			);
-
-			let errorOutput = '';
-			let stdoutOutput = '';
-
-			ytdlp.stderr.on("data", (data) => {
-				const message = data.toString();
-				errorOutput += message;
-				console.error(`yt-dlp stderr: ${message}`);
-			});
-
-			ytdlp.stdout.on("data", (data) => {
-				const message = data.toString();
-				stdoutOutput += message;
-				console.log(`yt-dlp stdout: ${message}`);
-			});
-
-			ytdlp.on("error", (err) => {
-				console.error("yt-dlp process error:", err);
-				console.error("Accumulated stdout:", stdoutOutput);
-				console.error("Accumulated stderr:", errorOutput);
-				reject(err);
-			});
-
-			ytdlp.on("close", (code) => {
-				console.log("yt-dlp process exited with code:", code);
-				console.log("Final stdout:", stdoutOutput);
-				console.log("Final stderr:", errorOutput);
-				
-				// Clean up cookies file
-				try {
-					fs.unlinkSync(cookiesPath);
-				} catch (err) {
-					console.error("Error deleting cookies file:", err);
-				}
-				
-				if (code === 0) {
-					if (!fs.existsSync(videoPath)) {
-						const error = new Error("Video file not found after download");
-						console.error(error.message);
-						reject(error);
-					} else {
-						const stats = fs.statSync(videoPath);
-						console.log("Video downloaded successfully to:", videoPath);
-						console.log("File size:", stats.size, "bytes");
-						resolve();
-					}
-				} else {
-					// Try to get available formats when download fails
-					try {
-						console.log("Attempting to list available formats...");
-						exec(`${ytDlpPath} --list-formats ${url}`, (error, stdout, stderr) => {
-							if (error) {
-								console.error("Error listing formats:", error);
-							} else {
-								console.log("Available formats:", stdout);
-							}
-						});
-					} catch (err) {
-						console.error("Error executing format list command:", err);
-					}
-					
-					const error = new Error(`yt-dlp exited with code ${code}`);
-					console.error(error.message);
-					reject(error);
-				}
-			});
-		});
+		// Download video with yt-dlp using the helper function
+		await executeYtDlp([
+			'--format', 'best[height<=720][ext=mp4]/worst[height>=360][ext=mp4]/worst[ext=mp4]/best',
+			'--force-ipv4',
+			'--cookies', cookiesPath,
+			'--no-check-certificates',
+			'--no-cache-dir',
+			'--no-warnings',
+			'--prefer-insecure',
+			'--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+			'--referer', 'https://www.youtube.com/',
+			'--add-header', 'Accept-Language:en-US,en;q=0.9',
+			'--add-header', 'Accept:text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+			'--add-header', 'Accept-Encoding:gzip, deflate',
+			'--add-header', 'DNT:1',
+			'--add-header', 'Connection:keep-alive',
+			'--add-header', 'Upgrade-Insecure-Requests:1',
+			'--add-header', 'Sec-Fetch-Site:same-origin',
+			'--add-header', 'Sec-Fetch-Mode:navigate',
+			'--add-header', 'Sec-Fetch-User:?1',
+			'--add-header', 'Sec-Fetch-Dest:document',
+			'--geo-bypass',
+			'--no-playlist',
+			'--extractor-args', 'youtube:player_client=android,web',
+			'--output', videoPath,
+			'--no-part',
+			'--no-mtime',
+			'--ignore-errors',
+			'--abort-on-error',
+			'--socket-timeout', '30',
+			'--retries', '3',
+			'--sleep-requests', '1',
+			'--sleep-interval', '5',
+			'--max-sleep-interval', '10',
+			'--sleep-subtitles', '1',
+			url
+		], tmpDir);
 
 		console.log("Starting to trim the video...");
 
@@ -248,18 +214,15 @@ youtube.com	TRUE	/	FALSE	${Math.floor(Date.now() / 1000) + 3600 * 24 * 365}	PREF
 		});
 
 		console.log("Streaming the trimmed video...");
-		// Stream back result
 		res.setHeader("Content-Type", "video/mp4");
 		res.setHeader("Content-Disposition", 'attachment; filename="trimmed.mp4"');
 		const readStream = fs.createReadStream(outputPath);
 		readStream.pipe(res);
 		readStream.on("close", () => {
 			console.log("Streaming finished, cleaning up...");
-			// Clean up
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		});
 	} catch (err) {
-		// Clean up on error
 		if (tmpDir) {
 			try {
 				fs.rmSync(tmpDir, { recursive: true, force: true });
